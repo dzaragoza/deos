@@ -17,6 +17,10 @@
 #define PML4_ADDR 0x1000
 #define PDPT_ADDR 0x2000
 #define PD_ADDR   0x3000
+#define SYSCALL_HANDLER_ADDR 0x7E00
+
+#define MSR_STAR  0xc0000081u
+#define MSR_LSTAR 0xc0000082u
 
 #define CHECK(call) do { if ((call) < 0) { perror(#call); return 1; } } while (0)
 
@@ -50,15 +54,18 @@ int main(int argc, char **argv)
     memcpy(ram + CODE_ADDR, guest_code, guest_code_end - guest_code);
 
     uint64_t *pt = (uint64_t *)ram;
-    pt[PML4_ADDR / 8] = PDPT_ADDR | 0x3;
-    pt[PDPT_ADDR / 8] = PD_ADDR | 0x3;
-    pt[PD_ADDR / 8] = 0x0 | 0x83;
+    pt[PML4_ADDR / 8] = PDPT_ADDR | 0x7;
+    pt[PDPT_ADDR / 8] = PD_ADDR | 0x7;
+    pt[PD_ADDR / 8] = 0x0 | 0x87;
 
     uint64_t gdt[] = {
         0,
         0x00CF9A000000FFFFULL,
         0x00CF92000000FFFFULL,
         0x00AF9A000000FFFFULL,
+        0x00CF92000000FFFFULL,
+        0x00AFFA000000FFFFULL,
+        0x00CFF2000000FFFFULL,
     };
     memcpy(ram + GDT_ADDR, gdt, sizeof gdt);
 
@@ -91,6 +98,19 @@ int main(int argc, char **argv)
     CHECK(ioctl(vcpu, KVM_SET_CPUID2, cpuid));
     free(cpuid);
 
+    struct kvm_msrs *msrs = calloc(1, sizeof(*msrs) + 2 * sizeof(msrs->entries[0]));
+    msrs->nmsrs = 2;
+    msrs->entries[0] = (struct kvm_msr_entry) {
+        .index = MSR_STAR,
+        .data = (0x28ULL << 48) | (0x18ULL << 32),
+    };
+    msrs->entries[1] = (struct kvm_msr_entry) {
+        .index = MSR_LSTAR,
+        .data = SYSCALL_HANDLER_ADDR,
+    };
+    CHECK(ioctl(vcpu, KVM_SET_MSRS, msrs));
+    free(msrs);
+
     struct kvm_sregs sregs;
     CHECK(ioctl(vcpu, KVM_GET_SREGS, &sregs));
     sregs.cs.selector = 0;
@@ -114,8 +134,8 @@ int main(int argc, char **argv)
             struct kvm_sregs s;
             ioctl(vcpu, KVM_GET_REGS, &r);
             ioctl(vcpu, KVM_GET_SREGS, &s);
-            printf("rip=%#06llx cs.l=%u cr0=%#010llx cr4=%#06llx efer=%#06llx bytes=",
-                   (unsigned long long)r.rip, s.cs.l,
+            printf("rip=%#06llx cpl=%u cs.l=%u cr0=%#010llx cr4=%#06llx efer=%#06llx bytes=",
+                   (unsigned long long)r.rip, s.cs.selector & 3, s.cs.l,
                    (unsigned long long)s.cr0, (unsigned long long)s.cr4,
                    (unsigned long long)s.efer);
             for (unsigned i = 0; i < 8 && r.rip + i < RAM_SIZE; i++)
