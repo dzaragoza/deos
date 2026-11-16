@@ -11,6 +11,8 @@
 #   - identity page tables: PML4 @0x1000 -> PDPT @0x2000 -> PD @0x3000,
 #     PD[0] = 2 MiB page at physical 0 (covers code, stack and VGA @0xB8000)
 
+.global start
+
 .code16
 start:
     cli                     # no interrupts; we end with hlt anyway
