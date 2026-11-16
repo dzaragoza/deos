@@ -3,8 +3,8 @@ CFLAGS := -O2 -Wall -Wextra
 
 all: kvm-hellord
 
-kvm-hellord: kvm-hellord.c
-	$(CC) $(CFLAGS) -o $@ $<
+kvm-hellord: kvm-hellord.c guest.bin
+	$(CC) $(CFLAGS) -o $@ kvm-hellord.c
 
 guest.bin: guest.s
 	as -o guest.o guest.s
@@ -15,7 +15,10 @@ guest.bin: guest.s
 run: kvm-hellord
 	./kvm-hellord
 
+trace: kvm-hellord
+	./kvm-hellord trace
+
 clean:
 	rm -f kvm-hellord guest.bin guest.o guest.elf
 
-.PHONY: all run clean guest.bin
+.PHONY: all run trace clean guest.bin
