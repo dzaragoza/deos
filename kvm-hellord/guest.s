@@ -17,14 +17,17 @@
 #     all with U/S=1, PD[0] = 2 MiB page at physical 0 (covers code,
 #     stacks, input buffer and VGA @0xB8000)
 #   - MSR_STAR (kernel CS 0x18 / user CS 0x28), MSR_LSTAR = 0x7E00
-#   - on hypercall nr=0x1000 the host fills INPUT_BUF (0x9000) with one
-#     line of stdin, NUL-terminated
+#   - on `out` to port READ_PORT the host fills INPUT_BUF (0x9000) with
+#     one line of stdin, NUL-terminated. (We use port IO, not vmcall:
+#     since ~6.13 KVM swallows unknown hypercalls in-kernel unless the
+#     VMM enables them via KVM_CAP_EXIT_HYPERCALL; IO exits always fire.)
 
 .global start
 
-.equ INPUT_BUF, 0x9000      # filled by the host on syscall 0x1000
+.equ INPUT_BUF, 0x9000      # filled by the host on syscall SYS_READ
 .equ SYS_READ, 0x1000       # syscall number: read one line into INPUT_BUF
 .equ SYS_EXIT, 0            # syscall number: halt
+.equ READ_PORT, 0x600       # IO port the ring-0 handler outs to ask the host for input
 
 .code16
 start:
@@ -140,7 +143,8 @@ syscall_handler:            # MSR_LSTAR target, runs at ring 0
     cmpq $SYS_READ, %rax    # syscall number in rax
     je 1f
     hlt                     # SYS_EXIT: halt -> KVM_EXIT_HLT
-1:  vmcall                  # hypercall nr=0x1000: host fills INPUT_BUF
+1:  movw $READ_PORT, %dx
+    outb %al, %dx           # IO exit to host (KVM_EXIT_IO): read a line into INPUT_BUF
     sysretq                 # return to user: rip=rcx, rflags=r11
 
 gdt_desc:                   # GDTR image for lgdt above

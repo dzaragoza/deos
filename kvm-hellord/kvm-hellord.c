@@ -19,6 +19,7 @@
 #define PD_ADDR   0x3000
 #define SYSCALL_HANDLER_ADDR 0x7E00
 #define INPUT_ADDR 0x9000
+#define READ_PORT  0x600
 
 #define MSR_STAR  0xc0000081u
 #define MSR_LSTAR 0xc0000082u
@@ -159,12 +160,11 @@ int main(int argc, char **argv)
             printf("\n");
             continue;
         }
-        if (run->exit_reason == KVM_EXIT_HYPERCALL) {
-            flush_vga();
-            if (trace)
-                printf("-- hypercall nr=%llu --\n",
-                       (unsigned long long)run->hypercall.nr);
-            if (run->hypercall.nr == 0x1000) {
+        if (run->exit_reason == KVM_EXIT_IO) {
+            if (run->io.direction == KVM_EXIT_IO_OUT && run->io.port == READ_PORT) {
+                flush_vga();
+                if (trace)
+                    printf("-- io out port=%#x (read line) --\n", run->io.port);
                 char line[256] = { 0 };
                 if (fgets(line, sizeof line, stdin))
                     line[strcspn(line, "\n")] = 0;
