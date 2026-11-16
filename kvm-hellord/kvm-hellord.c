@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -78,12 +79,17 @@ int main(void)
     struct kvm_run *run = mmap(NULL, run_size, PROT_READ | PROT_WRITE, MAP_SHARED, vcpu, 0);
     if (run == MAP_FAILED) { perror("mmap kvm_run"); return 1; }
 
-    struct kvm_cpuid2 *cpuid = calloc(1, sizeof(*cpuid) + sizeof(cpuid->entries[0]));
-    cpuid->nent = 1;
-    cpuid->entries[0] = (struct kvm_cpuid_entry2) {
-        .function = 0, .eax = 0,
-        .ebx = 0x756e6547, .ecx = 0x6c65746e, .edx = 0x49656e69,
-    };
+    struct kvm_cpuid2 *cpuid = NULL;
+    unsigned int n = 128;
+    for (;;) {
+        cpuid = calloc(1, sizeof(*cpuid) + n * sizeof(cpuid->entries[0]));
+        cpuid->nent = n;
+        if (ioctl(kvm, KVM_GET_SUPPORTED_CPUID, cpuid) == 0)
+            break;
+        if (errno != E2BIG) { perror("KVM_GET_SUPPORTED_CPUID"); return 1; }
+        n = cpuid->nent;
+        free(cpuid);
+    }
     CHECK(ioctl(vcpu, KVM_SET_CPUID2, cpuid));
     free(cpuid);
 
