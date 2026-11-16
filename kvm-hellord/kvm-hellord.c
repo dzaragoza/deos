@@ -37,7 +37,7 @@ int main(void)
     int vm = ioctl(kvm, KVM_CREATE_VM, 0);
     CHECK(vm);
 
-    uint8_t *ram = mmap(NULL, RAM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, vm, 0);
+    uint8_t *ram = mmap(NULL, RAM_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ram == MAP_FAILED) { perror("mmap guest ram"); return 1; }
     memset(ram, 0, RAM_SIZE);
     memcpy(ram + CODE_ADDR, code, n);
