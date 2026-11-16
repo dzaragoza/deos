@@ -1,6 +1,6 @@
 # deos guest: ring-0 kernel enters long mode, drops to ring 3; the user
-# program prints "Hellord!", reads one line of input via syscall, echoes
-# it to the VGA text buffer, then exits via syscall.
+# program prints "Hellord!", then runs a tiny shell loop: print "> ",
+# read a line via syscall, echo it, repeat -- until the line is "exit".
 #
 # Build: the Makefile assembles this flat and links it at 0x7C00
 #   (ld -Ttext=0x7C00), producing guest.bin, which kvm-hellord.c
@@ -17,12 +17,14 @@
 #     all with U/S=1, PD[0] = 2 MiB page at physical 0 (covers code,
 #     stacks, input buffer and VGA @0xB8000)
 #   - MSR_STAR (kernel CS 0x18 / user CS 0x28), MSR_LSTAR = 0x7E00
-#   - on hypercall nr=0x1000 the host fills INPUT_BUF (0x9000) with one line
-#     of stdin, NUL-terminated
+#   - on hypercall nr=0x1000 the host fills INPUT_BUF (0x9000) with one
+#     line of stdin, NUL-terminated
 
 .global start
 
-.equ INPUT_BUF, 0x9000      # filled by the host on syscall 1
+.equ INPUT_BUF, 0x9000      # filled by the host on syscall 0x1000
+.equ SYS_READ, 0x1000       # syscall number: read one line into INPUT_BUF
+.equ SYS_EXIT, 0            # syscall number: halt
 
 .code16
 start:
@@ -83,43 +85,61 @@ lm64:                       # ---- ring 0 kernel ----
     iretq
 
 user_code:                  # ---- ring 3 user program ----
-    # print "Hellord!\n" to the VGA text buffer at 0xB8000
     movl $0xB8000, %edi     # VGA cursor (cell pointer)
     movl $msg, %esi
     xorl %eax, %eax
     movb $0x0F, %ah         # attribute: white on black
-1:  lodsb                   # al = [rsi], rsi++
+1:  lodsb                   # print "Hellord!\n"
     testb %al, %al
     jz 2f
     stosw                   # [rdi] = ax (char + attribute), rdi += 2
     jmp 1b
 
-2:  # syscall 0x1000: host reads one line of stdin into INPUT_BUF
-    movl $0x1000, %eax
-    syscall                 # -> syscall_handler (ring 0) -> vmcall -> host
-
-    # echo INPUT_BUF to the VGA (rdi still points at the next free cell;
-    # syscall only clobbers rcx/r11, vmcall clobbers nothing)
-    movl $INPUT_BUF, %esi
-3:  lodsb
+2:  shell_loop:             # ---- shell: prompt, read, echo, repeat ----
+    movl $prompt, %esi
+3:  lodsb                   # print "> "
     testb %al, %al
     jz 4f
     stosw
     jmp 3b
-4:  movb $0x0A, %al         # newline after the echoed line
-    stosw
 
-    movl $0, %eax           # syscall 0: exit
+4:  movl $SYS_READ, %eax    # syscall 0x1000: read one line into INPUT_BUF
+    syscall                 # -> syscall_handler -> vmcall -> host stdin
+
+    # if the line is exactly "exit", leave the loop
+    movl $INPUT_BUF, %esi
+    movl (%rsi), %eax
+    cmpl exit_str, %eax     # first 4 bytes == "exit"
+    jne 5f
+    cmpb $0, 4(%rsi)        # ...and NUL-terminated right after
+    je .done
+
+5:  movl $INPUT_BUF, %esi   # echo the line (rdi still at the next cell;
+6:  lodsb                   # syscall only clobbers rcx/r11, so the VGA
+    testb %al, %al          # cursor in rdi survives)
+    jz 7f
+    stosw
+    jmp 6b
+7:  movb $0x0A, %al         # newline after the echoed line
+    stosw
+    jmp 2b                  # back to the prompt
+
+.done:
+    movl $SYS_EXIT, %eax    # syscall 0: halt -> KVM_EXIT_HLT
     syscall
 
 msg:
     .ascii "Hellord!\n\0"
+prompt:
+    .ascii "> \0"
+exit_str:
+    .ascii "exit\0"
 
 .org 0x200                  # lands at physical 0x7E00 (0x7C00 + 0x200)
 syscall_handler:            # MSR_LSTAR target, runs at ring 0
-    cmpq $0x1000, %rax           # syscall number in rax
+    cmpq $SYS_READ, %rax    # syscall number in rax
     je 1f
-    hlt                     # syscall 0: halt -> KVM_EXIT_HLT
+    hlt                     # SYS_EXIT: halt -> KVM_EXIT_HLT
 1:  vmcall                  # hypercall nr=0x1000: host fills INPUT_BUF
     sysretq                 # return to user: rip=rcx, rflags=r11
 
