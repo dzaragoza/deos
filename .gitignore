@@ -1,0 +1,4 @@
+kvm-hellord/kvm-hellord
+kvm-hellord/guest.bin
+kvm-hellord/*.o
+kvm-hellord/*.elf

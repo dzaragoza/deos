@@ -1,5 +1,5 @@
 #!/usr/bin/env fish
-# Pull latest main, build, and run the KVM hello world.
+# Pull latest main, build, and run the KVM hello world via make.
 
 set dir (cd (dirname (status filename)) && pwd)
 
@@ -14,5 +14,4 @@ if test -n "$repo"
 end
 
 cd $dir
-gcc -O2 -Wall -Wextra -o kvm-hellord kvm-hellord.c
-and ./kvm-hellord
+make run
