@@ -18,13 +18,27 @@
 #define PDPT_ADDR 0x2000
 #define PD_ADDR   0x3000
 #define SYSCALL_HANDLER_ADDR 0x7E00
+#define INPUT_ADDR 0x9000
 
 #define MSR_STAR  0xc0000081u
 #define MSR_LSTAR 0xc0000082u
 
 #define CHECK(call) do { if ((call) < 0) { perror(#call); return 1; } } while (0)
 
-static const char msg[] = "Hellord!\n";
+static uint8_t *ram;
+static size_t vga_printed;
+
+static void flush_vga(void)
+{
+    for (size_t j = vga_printed; j < 80 * 25; j++) {
+        uint8_t c = ram[VGA_TEXT + 2 * j];
+        if (c == 0)
+            break;
+        putchar(c);
+        vga_printed = j + 1;
+    }
+    fflush(stdout);
+}
 
 __asm__(
     ".section .rodata\n"
@@ -47,7 +61,7 @@ int main(int argc, char **argv)
     int vm = ioctl(kvm, KVM_CREATE_VM, 0);
     CHECK(vm);
 
-    uint8_t *ram = mmap(NULL, RAM_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    ram = mmap(NULL, RAM_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ram == MAP_FAILED) { perror("mmap guest ram"); return 1; }
     memset(ram, 0, RAM_SIZE);
 
@@ -143,6 +157,19 @@ int main(int argc, char **argv)
             printf("\n");
             continue;
         }
+        if (run->exit_reason == KVM_EXIT_HYPERCALL) {
+            flush_vga();
+            if (trace)
+                printf("-- hypercall nr=%llu --\n",
+                       (unsigned long long)run->hypercall.nr);
+            if (run->hypercall.nr == 0x1000) {
+                char line[256] = { 0 };
+                if (fgets(line, sizeof line, stdin))
+                    line[strcspn(line, "\n")] = 0;
+                memcpy(ram + INPUT_ADDR, line, strlen(line) + 1);
+            }
+            continue;
+        }
         if (run->exit_reason == KVM_EXIT_HLT)
             break;
         struct kvm_regs r;
@@ -152,7 +179,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    for (size_t j = 0; j < strlen(msg); j++)
-        putchar(ram[VGA_TEXT + 2 * j]);
+    flush_vga();
     return 0;
 }

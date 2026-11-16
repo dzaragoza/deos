@@ -1,5 +1,6 @@
-# deos guest: enter 64-bit long mode at ring 0, drop to ring 3 (user mode),
-# print "Hellord!" from CPL3 to the VGA text buffer, exit via syscall.
+# deos guest: ring-0 kernel enters long mode, drops to ring 3; the user
+# program prints "Hellord!", reads one line of input via syscall, echoes
+# it to the VGA text buffer, then exits via syscall.
 #
 # Build: the Makefile assembles this flat and links it at 0x7C00
 #   (ld -Ttext=0x7C00), producing guest.bin, which kvm-hellord.c
@@ -13,12 +14,15 @@
 #       0x18 ring-0 64-bit code   0x20 ring-0 64-bit data   (kernel)
 #       0x28 ring-3 64-bit code   0x30 ring-3 data         (user)
 #   - identity page tables: PML4 @0x1000 -> PDPT @0x2000 -> PD @0x3000,
-#     PD[0] = 2 MiB page at physical 0 with U/S=1 (user-accessible),
-#     covering code, stacks and VGA @0xB8000
-#   - MSR_LSTAR = 0x7E00 (syscall_handler below), MSR_STAR selects
-#     kernel CS 0x18 / user CS 0x28
+#     all with U/S=1, PD[0] = 2 MiB page at physical 0 (covers code,
+#     stacks, input buffer and VGA @0xB8000)
+#   - MSR_STAR (kernel CS 0x18 / user CS 0x28), MSR_LSTAR = 0x7E00
+#   - on hypercall nr=0x1000 the host fills INPUT_BUF (0x9000) with one line
+#     of stdin, NUL-terminated
 
 .global start
+
+.equ INPUT_BUF, 0x9000      # filled by the host on syscall 1
 
 .code16
 start:
@@ -78,24 +82,46 @@ lm64:                       # ---- ring 0 kernel ----
     pushq $user_code        # RIP
     iretq
 
-user_code:                  # ---- ring 3 user mode ----
-    movl $0xB8000, %edi     # VGA text buffer (user-accessible page)
-    movl $msg, %esi         # the string, stored below
+user_code:                  # ---- ring 3 user program ----
+    # print "Hellord!\n" to the VGA text buffer at 0xB8000
+    movl $0xB8000, %edi     # VGA cursor (cell pointer)
+    movl $msg, %esi
     xorl %eax, %eax
     movb $0x0F, %ah         # attribute: white on black
 1:  lodsb                   # al = [rsi], rsi++
     testb %al, %al
-    jz 2f                   # NUL -> done
+    jz 2f
     stosw                   # [rdi] = ax (char + attribute), rdi += 2
     jmp 1b
-2:  syscall                 # CPL3 -> CPL0 via MSR_LSTAR, RCX = return RIP
+
+2:  # syscall 0x1000: host reads one line of stdin into INPUT_BUF
+    movl $0x1000, %eax
+    syscall                 # -> syscall_handler (ring 0) -> vmcall -> host
+
+    # echo INPUT_BUF to the VGA (rdi still points at the next free cell;
+    # syscall only clobbers rcx/r11, vmcall clobbers nothing)
+    movl $INPUT_BUF, %esi
+3:  lodsb
+    testb %al, %al
+    jz 4f
+    stosw
+    jmp 3b
+4:  movb $0x0A, %al         # newline after the echoed line
+    stosw
+
+    movl $0, %eax           # syscall 0: exit
+    syscall
 
 msg:
     .ascii "Hellord!\n\0"
 
 .org 0x200                  # lands at physical 0x7E00 (0x7C00 + 0x200)
-syscall_handler:            # MSR_LSTAR target, runs at ring 0: just halt
-    hlt                     # -> KVM_EXIT_HLT on the host
+syscall_handler:            # MSR_LSTAR target, runs at ring 0
+    cmpq $0x1000, %rax           # syscall number in rax
+    je 1f
+    hlt                     # syscall 0: halt -> KVM_EXIT_HLT
+1:  vmcall                  # hypercall nr=0x1000: host fills INPUT_BUF
+    sysretq                 # return to user: rip=rcx, rflags=r11
 
 gdt_desc:                   # GDTR image for lgdt above
     .word 0x37              # limit: 7 entries * 8 - 1
