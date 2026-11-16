@@ -54,6 +54,8 @@ extern const uint8_t guest_code_end[];
 int main(int argc, char **argv)
 {
     int trace = argc > 1 && strcmp(argv[1], "trace") == 0;
+    if (trace)
+        setvbuf(stdout, NULL, _IONBF, 0);
 
     int kvm = open("/dev/kvm", O_RDWR | O_CLOEXEC);
     if (kvm < 0) { perror("open /dev/kvm (modprobe kvm first)"); return 1; }
@@ -172,10 +174,23 @@ int main(int argc, char **argv)
         }
         if (run->exit_reason == KVM_EXIT_HLT)
             break;
+        flush_vga();
         struct kvm_regs r;
+        struct kvm_sregs s;
         ioctl(vcpu, KVM_GET_REGS, &r);
-        fprintf(stderr, "unexpected exit reason %d at rip=%#llx\n",
-                run->exit_reason, (unsigned long long)r.rip);
+        ioctl(vcpu, KVM_GET_SREGS, &s);
+        fprintf(stderr, "exit reason %d at rip=%#llx cpl=%u cs.l=%u cr0=%#llx cr3=%#llx cr4=%#llx efer=%#llx\n",
+                run->exit_reason, (unsigned long long)r.rip, s.cs.selector & 3, s.cs.l,
+                (unsigned long long)s.cr0, (unsigned long long)s.cr3,
+                (unsigned long long)s.cr4, (unsigned long long)s.efer);
+        if (run->exit_reason == KVM_EXIT_MMIO)
+            fprintf(stderr, "  MMIO %s guest-phys=%#llx len=%u\n",
+                    run->mmio.is_write ? "write" : "read",
+                    (unsigned long long)run->mmio.phys_addr, run->mmio.len);
+        if (run->exit_reason == KVM_EXIT_IO)
+            fprintf(stderr, "  IO %s port=%#x size=%u\n",
+                    run->io.direction == KVM_EXIT_IO_OUT ? "out" : "in",
+                    run->io.port, run->io.size);
         return 1;
     }
 
